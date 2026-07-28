@@ -25,7 +25,7 @@ st.sidebar.header("📂 Cargar Archivos del Servidor SCADA")
 # Carga de archivos .AT y .dat
 uploaded_at = st.sidebar.file_uploader(
     "1. Sube el/los archivo(s) .AT (Diccionario)",
-    type=["at", "AT", "xml", "dbf"],
+    type=None,
     accept_multiple_files=True
 )
 
