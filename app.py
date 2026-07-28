@@ -3,204 +3,111 @@ import pandas as pd
 import numpy as np
 import struct
 import string
-import re
 import io
 
-# Configuración de la aplicación
-st.set_page_config(
-    page_title="Extractor Binario SCADA VICOS",
-    page_icon="⚡",
-    layout="wide"
-)
+st.set_page_config(page_title="Analizador Multi-Columna SCADA", layout="wide")
 
-st.title("⚡ Extractor y Decodificador de Archivos SCADA (.dat)")
-st.markdown("""
-Esta herramienta limpia los caracteres binarios de control no imprimibles para:
-1. **Identificar la variable / Tag** que contiene el archivo en su cabecera.
-2. **Extraer los valores numéricos reales** (voltajes, corrientes, potencias) sin que aparezcan símbolos extraños.
-3. **Graficar las curvas** y exportar un archivo `.txt` o `.csv` limpio.
-""")
+st.title("⚡ Decodificador de Estructura Multicolumna SCADA (.dat)")
+st.write("Ajusta los parámetros del registro binario para desempaquetar correctamente todas las columnas de cada fila.")
 
-# Cargador de archivos
-uploaded_files = st.file_uploader(
-    "Carga uno o varios archivos .dat de tu carpeta SCADA:",
-    type=["dat", "raw", "his", "txt"],
-    accept_multiple_files=True
-)
+uploaded_file = st.file_uploader("Sube tu archivo MESSAGES.dat u otro histórico", type=["dat", "raw", "his", "txt"])
 
-def extraer_metadata_limpia(raw_bytes, max_bytes=2048):
-    """
-    Filtra los bytes de control no imprimibles (como , \x00, ꑒ) y extrae únicamente
-    cadenas de texto ASCII legibles (nombres de subestaciones, Tags o variables).
-    """
-    bytes_cabecera = raw_bytes[:max_bytes]
-    
-    # 1. Convertir a caracteres filtrando símbolos de control no imprimibles
-    caracteres_validos = set(string.ascii_letters + string.digits + " _-.:/@")
-    texto_filtrado = "".join([chr(b) if chr(b) in caracteres_validos else " " for b in bytes_cabecera])
-    
-    # 2. Extraer palabras estructuradas de al menos 3 caracteres
-    palabras = [p.strip() for p in texto_filtrado.split() if len(p.strip()) >= 3 and not p.strip().isdigit()]
-    
-    return palabras
-
-def decodificar_valores_numericos(raw_bytes):
-    """
-    Desempaqueta bloques binarios directamente a flotantes de 32 bits (IEEE 754),
-    evitando traducir números a símbolos de texto.
-    """
+if uploaded_file is not None:
+    raw_bytes = uploaded_file.read()
     total_bytes = len(raw_bytes)
-    record_size = 4  # 4 bytes por número flotante
-    valores = []
-    
-    # Recorrer el archivo de 4 en 4 bytes
-    for i in range(0, total_bytes - (total_bytes % record_size), record_size):
-        chunk = raw_bytes[i:i + record_size]
-        try:
-            # Little-endian float (<f) es la estructura estándar de Windows/Siemens
-            val = struct.unpack('<f', chunk)[0]
-            
-            # Filtrar valores infinitos, NaN y fuera de rango eléctrico coherente
-            if not np.isnan(val) and not np.isinf(val):
-                if -500000.0 < val < 500000.0 and val != 0.0:
-                    valores.append(val)
-        except Exception:
-            continue
-            
-    return valores
+    st.info(f"Tamaño total del archivo: {total_bytes} bytes")
 
-def procesar_texto_plano(raw_bytes):
-    """Si el archivo resulta ser texto delimitado por comas/tabulaciones, lo extrae."""
-    try:
-        texto = raw_bytes.decode('utf-8', errors='ignore')
-        lineas = [l.strip() for l in texto.splitlines() if len(l.strip()) > 0 and not l.startswith('\x00')]
-        if len(lineas) > 5 and (',' in lineas[0] or '\t' in lineas[0] or ';' in lineas[0]):
-            return lineas
-    except Exception:
-        pass
-    return None
-
-if uploaded_files:
-    st.markdown("---")
-    st.header("1. Resumen e Identificación de Archivos Subidos")
+    st.sidebar.header("⚙️ Configuración del Registro Binario")
     
-    resumen_list = []
-    detalles_archivos = {}
-
-    for file in uploaded_files:
-        contenido = file.read()
-        tamano_mb = len(contenido) / (1024 * 1024)
-        
-        # 1. Extraer palabras/tags limpias
-        tags_encontrados = extraer_metadata_limpia(contenido)
-        identificador_str = " | ".join(tags_encontrados[:6]) if tags_encontrados else "Binario Puro (Sin Metadatos)"
-        
-        # 2. Decodificar números
-        valores_num = decodificar_valores_numericos(contenido)
-        lineas_texto = procesar_texto_plano(contenido)
-        
-        es_texto = lineas_texto is not None
-        tipo_formato = "Texto CSV/TSV" if es_texto else f"Binario SCADA ({len(valores_num)} lecturas)"
-        
-        resumen_list.append({
-            "Nombre del Archivo": file.name,
-            "Tamaño (MB)": round(tamano_mb, 2),
-            "Formato Detectado": tipo_formato,
-            "Tags y Palabras Legibles Encontradas": identificador_str
-        })
-        
-        detalles_archivos[file.name] = {
-            "bytes": contenido,
-            "tags": tags_encontrados,
-            "valores_num": valores_num,
-            "lineas_texto": lineas_texto
-        }
-
-    # Mostrar la tabla comparativa
-    df_resumen = pd.DataFrame(resumen_list)
-    st.dataframe(df_resumen, use_container_width=True)
-    
-    st.markdown("---")
-    st.header("2. Extractor y Graficador de Curva")
-    
-    archivo_seleccionado = st.selectbox(
-        "Selecciona el archivo que deseas inspeccionar:",
-        options=list(detalles_archivos.keys())
+    # Permitir al usuario elegir cuántos bytes ocupa una FILA COMPLETA en el SCADA
+    # Los registros de eventos/mensajes en Siemens suelen medir 16, 24, 32, 48 o 64 bytes por fila
+    bytes_per_row = st.sidebar.number_input(
+        "Tamaño de Fila/Registro (Bytes por fila):", 
+        min_value=8, 
+        max_value=128, 
+        value=32, 
+        step=4,
+        help="Siemens VICOS suele usar registros de 24, 32 o 48 bytes para alojar fecha, TagID, valor y estado."
     )
     
-    if archivo_seleccionado:
-        info = detalles_archivos[archivo_seleccionado]
-        
-        tab_tags, tab_curva, tab_export = st.tabs([
-            "🏷️ Identificación / Tags", 
-            "📈 Tabla y Curva Numérica", 
-            "💾 Exportar a .TXT"
-        ])
-        
-        with tab_tags:
-            st.subheader("Información extraída de la cabecera")
-            if info["tags"]:
-                st.write("Palabras y códigos legibles encontrados (útil para identificar a qué variable corresponde en el SCADA):")
-                df_tags = pd.DataFrame({"Texto / Tag Limpio": info["tags"]})
-                st.dataframe(df_tags, use_container_width=True)
-            else:
-                st.warning("No se encontraron etiquetas ASCII legibles. El archivo es un bloque binario directo de mediciones.")
+    num_rows = total_bytes // bytes_per_row
+    st.sidebar.write(f"Filas estimadas: **{num_rows}**")
 
-        with tab_curva:
-            st.subheader("Datos Numéricos Desempaquetados")
-            
-            if info["lineas_texto"]:
-                st.info("Formato de texto plano detectado.")
+    # Selección de formato para desempaquetar las columnas dentro de la fila
+    # Un registro típico de 32 bytes puede tener 4 enteros (Int32) + 4 flotantes (Float32)
+    st.sidebar.subheader("Estructura de Columnas por Fila")
+    modo_desempaquetado = st.sidebar.radio(
+        "Modo de interpretación:",
+        ["Mixto (Texto + Números)", "Solo Flotantes (Float32)", "Solo Enteros (Int32)"]
+    )
+
+    filas_extraidas = []
+    caracteres_validos = set(string.ascii_letters + string.digits + " _-.:/@")
+
+    for i in range(0, total_bytes - (total_bytes % bytes_per_row), bytes_per_row):
+        chunk = raw_bytes[i:i + bytes_per_row]
+        fila = {}
+        
+        # Columna 0: Índice de Fila
+        fila["Fila_ID"] = (i // bytes_per_row) + 1
+        
+        if modo_desempaquetado == "Solo Flotantes (Float32)":
+            # Divide la fila en N columnas de 4 bytes como Float
+            cols_count = bytes_per_row // 4
+            for c in range(cols_count):
+                sub_chunk = chunk[c*4 : (c+1)*4]
                 try:
-                    df_csv = pd.read_csv(io.StringIO("\n".join(info["lineas_texto"])), sep=r'[\t;,|]', engine='python')
-                    st.dataframe(df_csv.head(500), use_container_width=True)
-                    num_cols = df_csv.select_dtypes(include=[np.number]).columns
-                    if len(num_cols) > 0:
-                        col_var = st.selectbox("Selecciona columna a graficar:", num_cols)
-                        st.line_chart(df_csv[col_var])
-                except Exception:
-                    st.text_area("Contenido extraído", "\n".join(info["lineas_texto"][:200]), height=300)
+                    val = struct.unpack('<f', sub_chunk)[0]
+                    fila[f"Col_Float_{c+1}"] = round(val, 4) if not np.isnan(val) and not np.isinf(val) else None
+                except:
+                    fila[f"Col_Float_{c+1}"] = None
+                    
+        elif modo_desempaquetado == "Solo Enteros (Int32)":
+            # Divide la fila en N columnas de 4 bytes como Int
+            cols_count = bytes_per_row // 4
+            for c in range(cols_count):
+                sub_chunk = chunk[c*4 : (c+1)*4]
+                try:
+                    val = struct.unpack('<i', sub_chunk)[0]
+                    fila[f"Col_Int_{c+1}"] = val
+                except:
+                    fila[f"Col_Int_{c+1}"] = None
+                    
+        else: # Mixto
+            # Extrae texto limpio de los primeros bytes de la fila (Tag/Estado)
+            texto_raw = "".join([chr(b) if chr(b) in caracteres_validos else "" for b in chunk])
+            fila["Texto_Identificador"] = texto_raw.strip() if texto_raw.strip() else "N/A"
             
-            elif info["valores_num"]:
-                st.success(f"Se extrajeron correctamente **{len(info['valores_num'])} mediciones numéricas**.")
-                
-                df_bin = pd.DataFrame({
-                    "Muestra": range(1, len(info["valores_num"]) + 1),
-                    "Valor_Medido": info["valores_num"]
-                })
-                
-                col_tabla, col_graf = st.columns([1, 2])
-                with col_tabla:
-                    st.dataframe(df_bin.head(500), use_container_width=True)
-                with col_graf:
-                    st.line_chart(df_bin.set_index("Muestra"))
-            else:
-                st.error("No se encontraron lecturas flotantes estándar en este archivo.")
+            # Extrae posibles flotantes en los siguientes bloques de 4 bytes
+            cols_count = bytes_per_row // 4
+            for c in range(cols_count):
+                sub_chunk = chunk[c*4 : (c+1)*4]
+                try:
+                    val = struct.unpack('<f', sub_chunk)[0]
+                    if not np.isnan(val) and not np.isinf(val) and -500000.0 < val < 500000.0:
+                        fila[f"Valor_Num_{c+1}"] = round(val, 2)
+                    else:
+                        fila[f"Valor_Num_{c+1}"] = None
+                except:
+                    fila[f"Valor_Num_{c+1}"] = None
 
-        with tab_export:
-            st.subheader("Generar archivo .TXT legible")
-            
-            if info["valores_num"]:
-                df_export = pd.DataFrame({
-                    "Muestra": range(1, len(info["valores_num"]) + 1),
-                    "Valor_Medido": info["valores_num"]
-                })
-                txt_data = df_export.to_csv(index=False, sep='\t')
-                
-                st.download_button(
-                    label=f"📥 Descargar `{archivo_seleccionado}.txt`",
-                    data=txt_data,
-                    file_name=f"{archivo_seleccionado}_limpio.txt",
-                    mime="text/plain"
-                )
-                st.markdown("**Vista previa del archivo .TXT a descargar:**")
-                st.code(txt_data[:400], language="text")
-                
-            elif info["lineas_texto"]:
-                txt_content = "\n".join(info["lineas_texto"])
-                st.download_button(
-                    label=f"📥 Descargar `{archivo_seleccionado}.txt`",
-                    data=txt_content,
-                    file_name=f"{archivo_seleccionado}_limpio.txt",
-                    mime="text/plain"
-                )
+        filas_extraidas.append(fila)
+
+    if filas_extraidas:
+        df = pd.DataFrame(filas_extraidas)
+        
+        st.subheader("📋 Tabla Multicolumna Desempaquetada")
+        st.write("Prueba cambiar el **Tamaño de Fila (Bytes)** en el panel de la izquierda hasta que las columnas queden alineadas correctamente.")
+        st.dataframe(df.head(500), use_container_width=True)
+        
+        # Opciones de Exportación
+        st.markdown("---")
+        st.subheader("📥 Exportar Tabla Estructurada")
+        
+        txt_buffer = df.to_csv(index=False, sep='\t')
+        st.download_button(
+            label="Descargar Tabla en formato .TXT (Separado por Tabuladores)",
+            data=txt_buffer,
+            file_name="scada_messages_multicolumna.txt",
+            mime="text/plain"
+        )
