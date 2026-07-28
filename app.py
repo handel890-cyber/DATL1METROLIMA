@@ -31,7 +31,7 @@ uploaded_at = st.sidebar.file_uploader(
 
 uploaded_dat = st.sidebar.file_uploader(
     "2. Sube el/los archivo(s) .dat (Históricos)",
-    type=["dat", "raw", "his"],
+    type=None,
     accept_multiple_files=True
 )
 
