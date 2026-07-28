@@ -4,57 +4,61 @@ import numpy as np
 import string
 import re
 
-# Configuración de página
+# Configuración de la página
 st.set_page_config(
-    page_title="Extractor SCADA Ultra-Rápido",
+    page_title="Inspector Binario SCADA - Matriz Dinámica",
     page_icon="⚡",
     layout="wide"
 )
 
-st.title("⚡ Extractor SCADA VICOS Ultra-Rápido")
-st.caption("Procesamiento optimizado con NumPy para archivos binarios pesados (.dat y .~at)")
+st.title("⚡ Inspector SCADA: Reorganizador de Columnas Binarias")
+st.caption("Juega con el número de canales/columnas para ajustar la estructura interna del archivo .dat")
 
-# --- PANEL LATERAL DE CARGA ---
-st.sidebar.header("📂 Carga de Archivos")
+# --- PANEL LATERAL DE CARGA Y CONTROLES ---
+st.sidebar.header("📂 1. Cargar Archivos")
 
-# type=None permite subir .~at, .at~, .dat, etc. sin bloqueos de Streamlit
 uploaded_at = st.sidebar.file_uploader(
-    "1. Sube archivos de atributos (.~at / .at):",
+    "Archivos de atributos (.~at / .at):",
     type=None,
     accept_multiple_files=True
 )
 
 uploaded_dat = st.sidebar.file_uploader(
-    "2. Sube archivos históricos (.dat):",
+    "Archivos históricos (.dat):",
     type=None,
     accept_multiple_files=True
 )
 
 st.sidebar.markdown("---")
-st.sidebar.header("⚙️ Ajustes de Rendimiento")
-frecuencia_muestreo = st.sidebar.number_input("Intervalo entre lecturas (Segundos)", min_value=1, value=1)
+st.sidebar.header("🎛️ 2. Estructura de la Matriz")
 
-# --- FUNCIONES OPTIMIZADAS ---
+# Control dinámico para "jugar" con las columnas
+num_columnas = st.sidebar.slider(
+    "Número de Columnas / Canales (Variables):",
+    min_value=1,
+    max_value=12,
+    value=1,
+    step=1,
+    help="Cambia este valor para ver cómo se redistribuye la tira plana de bytes en múltiples canales."
+)
+
+# --- FUNCIONES DE DECODIFICACIÓN ---
 
 def limpiar_id(nombre_archivo):
-    """Limpia la extensión e identificadores temporales (~at, .dat) para cruzar nombres."""
     nombre_sin_ext = re.sub(r'[\.\~](at|dat|raw|his|xml).*$', '', nombre_archivo, flags=re.IGNORECASE)
     return nombre_sin_ext.strip().upper()
 
 def extraer_metadata_at(file_at):
-    """Extrae palabras clave y unidades del archivo de atributos .~at"""
     bytes_at = file_at.read()
     try:
         texto = bytes_at.decode('latin-1', errors='ignore')
     except Exception:
         texto = str(bytes_at)
     
-    # Filtrar caracteres no imprimibles
     caracteres_ok = set(string.ascii_letters + string.digits + " _-.:/@")
     texto_limpio = "".join([c if c in caracteres_ok else " " for c in texto])
     palabras = [p.strip() for p in texto_limpio.split() if len(p.strip()) >= 2 and not p.strip().isdigit()]
     
-    # Detectar unidad de medida eléctrica
     unidades_conocidas = ["KV", "V", "A", "KA", "MW", "MVAR", "HZ", "AMP"]
     unidad_hallada = "Valor"
     for p in palabras:
@@ -67,111 +71,80 @@ def extraer_metadata_at(file_at):
 
 @st.cache_data
 def decodificar_dat_vectorizado(content_bytes):
-    """
-    DECODIFICACIÓN ULTRA-RÁPIDA USANDO NUMPY.
-    Lee todo el array de bytes de golpe en lugar de usar bucles for.
-    """
-    # Convertir el buffer de bytes directamente a Float32 (Little-endian '<f4')
     data = np.frombuffer(content_bytes, dtype='<f4')
-    
-    # Filtrar mediante máscaras vectoriales (100x más rápido que Python puro)
     mask = ~np.isnan(data) & ~np.isinf(data) & (data != 0.0) & (np.abs(data) < 500000.0)
-    valores_validos = data[mask]
-    
-    return np.round(valores_validos, 3)
+    return data[mask]
 
-# --- PROCESAMIENTO PRINCIPAL ---
+# --- PROCESAMIENTO Y VISUALIZACIÓN ---
 
 if uploaded_dat:
-    # 1. Indexar Metadatos .~at
     diccionario_metadata = {}
     if uploaded_at:
         for f_at in uploaded_at:
             key_id = limpiar_id(f_at.name)
             diccionario_metadata[key_id] = extraer_metadata_at(f_at)
             
-    archivos_procesados = {}
+    archivo_sel = st.selectbox("Selecciona el archivo .dat a inspeccionar:", [f.name for f in uploaded_dat])
+    f_dat = next(f for f in uploaded_dat if f.name == archivo_sel)
     
-    # 2. Procesar datos .dat con NumPy
-    with st.spinner("Procesando datos a alta velocidad con NumPy..."):
-        for f_dat in uploaded_dat:
-            bytes_dat = f_dat.read()
-            key_dat = limpiar_id(f_dat.name)
-            
-            # Decodificar usando la función vectorizada
-            valores = decodificar_dat_vectorizado(bytes_dat)
-            
-            # Emparejamiento Automático
-            if key_dat in diccionario_metadata:
-                tag = diccionario_metadata[key_dat]["Tag"]
-                unidad = diccionario_metadata[key_dat]["Unidad"]
-                estado = "✅ Emparejado Automático"
-            elif len(diccionario_metadata) == 1:
-                unica_key = list(diccionario_metadata.keys())[0]
-                tag = diccionario_metadata[unica_key]["Tag"]
-                unidad = diccionario_metadata[unica_key]["Unidad"]
-                estado = "⚠️ Usando .~at único disponible"
-            else:
-                tag = f"TAG_{key_dat}"
-                unidad = "Lectura"
-                estado = "❌ Sin .~at (Usando Nombre de Archivo)"
-                
-            archivos_procesados[f_dat.name] = {
-                "Tag": tag,
-                "Unidad": unidad,
-                "Estado": estado,
-                "Datos": valores
-            }
-
-    # 3. Resumen en Tabla
-    st.subheader("📊 Mapeo y Cruce de Archivos Realizado")
-    resumen_data = []
-    for nombre_archivo, info in archivos_procesados.items():
-        resumen_data.append({
-            "Archivo .dat": nombre_archivo,
-            "Tag Identificado": info["Tag"],
-            "Unidad": info["Unidad"],
-            "Total de Muestras": len(info["Datos"]),
-            "Estado del Mapeo": info["Estado"]
-        })
-    st.dataframe(pd.DataFrame(resumen_data), use_container_width=True)
+    bytes_dat = f_dat.read()
+    key_dat = limpiar_id(f_dat.name)
     
+    # 1. Obtener la tira plana de datos
+    valores_planos = decodificar_dat_vectorizado(bytes_dat)
+    total_muestras = len(valores_planos)
+    
+    # 2. Informar sobre el emparejamiento con el .~at
+    if key_dat in diccionario_metadata:
+        tag_base = diccionario_metadata[key_dat]["Tag"]
+        unidad_base = diccionario_metadata[key_dat]["Unidad"]
+        st.success(f" Metadatos vinculados desde `.~at`: **{tag_base}** ({unidad_base})")
+    else:
+        tag_base = f"CANAL_{key_dat}"
+        unidad_base = "Lectura"
+        st.warning("⚠️ Sin metadatos .~at asociados. Usando nombres de columna genéricos.")
+        
     st.markdown("---")
     
-    # 4. Visualización y Descarga
-    st.subheader("📈 Inspección y Exportación de Datos")
+    # 3. Lógica para reorganizar en N columnas usando reshape
+    sobrantes = total_muestras % num_columnas
+    muestras_utiles = total_muestras - sobrantes
     
-    archivo_seleccionado = st.selectbox("Selecciona un archivo para exportar:", list(archivos_procesados.keys()))
-    info_sel = archivos_procesados[archivo_seleccionado]
-    
-    col_graf, col_export = st.columns([2, 1])
-    
-    # Crear DataFrame rápido
-    df_export = pd.DataFrame({
-        "Muestra": np.arange(1, len(info_sel["Datos"]) + 1),
-        f"{info_sel['Tag']} ({info_sel['Unidad']})": info_sel["Datos"]
-    })
-    
-    with col_graf:
-        # Muestra gráfica optimizada (máximo 5,000 puntos para evitar saturar el navegador)
-        if len(df_export) > 5000:
-            st.caption("ℹ️ Mostrando vista previa reducida para mantener la fluidez del navegador.")
-            st.line_chart(df_export.iloc[::len(df_export)//5000].set_index("Muestra"))
-        else:
-            st.line_chart(df_export.set_index("Muestra"))
-            
-    with col_export:
-        st.write(f"**Tag:** `{info_sel['Tag']}`")
-        st.write(f"**Unidad:** `{info_sel['Unidad']}`")
-        st.write(f"**Muestras totales:** `{len(info_sel['Datos'])}`")
+    if sobrantes != 0:
+        st.info(f"💡 **Aviso de Matriz:** Con {num_columnas} columna(s), se forman **{muestras_utiles // num_columnas:,} filas completas** y quedan {sobrantes} dato(s) sueltos al final que se omiten para mantener la tabla simétrica.")
+    else:
+        st.success(f" Matriz perfecta: {total_muestras:,} datos divididos exactamente en **{num_columnas} columna(s)** ({total_muestras // num_columnas:,} filas).")
         
-        # Exportación ultrarrápida a TXT
-        txt_bytes = df_export.to_csv(index=False, sep='\t').encode('utf-8')
+    # Reorganizar la tira con NumPy
+    valores_recortados = valores_planos[:muestras_utiles]
+    matriz_reorganizada = valores_recortados.reshape(-1, num_columnas)
+    
+    # Crear nombres para las columnas
+    nombres_cols = [f"{tag_base}_Ch{i+1} ({unidad_base})" for i in range(num_columnas)]
+    
+    df_matriz = pd.DataFrame(matriz_reorganizada, columns=nombres_cols)
+    df_matriz.insert(0, "Fila / Instante", np.arange(1, len(df_matriz) + 1))
+    
+    # 4. Mostrar Resultados
+    col_tabla, col_graf = st.columns([1, 1])
+    
+    with col_tabla:
+        st.subheader(f"📋 Tabla Reorganizada ({num_columnas} Columna/s)")
+        st.dataframe(df_matriz.head(500), use_container_width=True)
+        
+        # Descarga en TXT de la matriz armada
+        txt_bytes = df_matriz.to_csv(index=False, sep='\t').encode('utf-8')
         st.download_button(
-            label="💾 Descargar TXT Limpio",
+            label="💾 Descargar esta estructura en TXT",
             data=txt_bytes,
-            file_name=f"{info_sel['Tag']}_extraido.txt",
+            file_name=f"{key_dat}_{num_columnas}col.txt",
             mime="text/plain"
         )
+        
+    with col_graf:
+        st.subheader("📈 Comparativa Visual de Canales")
+        # Graficar todas las columnas simultáneamente
+        st.line_chart(df_matriz.set_index("Fila / Instante"))
+
 else:
-    st.info("👈 Por favor, sube los archivos .dat y .~at en el panel lateral para iniciar el procesamiento.")
+    st.info("👈 Sube un archivo `.dat` en el panel izquierdo para empezar a ajustar las columnas.")
