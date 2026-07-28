@@ -1,60 +1,61 @@
 import streamlit as st
 import pandas as pd
-import re
-import io
+import struct
 
-st.set_page_config(page_title="Extractor de Curvas SCADA", layout="wide")
+st.set_page_config(page_title="Extractor Binario SCADA", layout="wide")
 
-st.title("⚡ Extractor y Visualizador de Curvas SCADA (.dat)")
-st.write("Sube tu archivo `.dat` del sistema VICOS/SCADA para procesarlo y visualizar las lecturas de voltaje y corriente.")
+st.title("⚡ Extractor de Archivos Binarios SCADA (.dat)")
+st.write("Esta aplicación desempaqueta los bytes numéricos (`float32`) de archivos `.dat` cerrados o binarios.")
 
-# Cargador de archivos en Streamlit
-uploaded_file = st.file_uploader("Selecciona el archivo .dat", type=["dat", "txt", "raw"])
+uploaded_file = st.file_uploader("Sube tu archivo .dat binario", type=["dat", "raw", "his"])
 
 if uploaded_file is not None:
-    st.success("Archivo cargado con éxito. Procesando contenido...")
+    # Leer el archivo como bytes puros (sin intentar convertir a texto)
+    raw_bytes = uploaded_file.read()
+    total_bytes = len(raw_bytes)
+    st.info(f"Tamaño del archivo: {total_bytes / (1024*1024):.2f} MB ({total_bytes} bytes)")
     
-    # Lectura del contenido en bytes
-    content_bytes = uploaded_file.read()
+    # Cada número flotante (float) en arquitectura de 32 bits ocupa 4 bytes
+    record_size = 4 
+    num_records = total_bytes // record_size
     
-    # Intento de extracción de texto plano/limpieza de bytes
-    try:
-        # Decodificar ignorando caracteres binarios no imprimibles
-        text_content = content_bytes.decode('utf-8', errors='ignore')
-        lines = text_content.splitlines()
+    values = []
+    
+    # Recorremos el archivo byte por byte extractando valores flotantes (IEEE 754)
+    # '<f' indica un número flotante de 32 bits (Little-Endian standard en Windows)
+    for i in range(0, total_bytes - (total_bytes % record_size), record_size):
+        chunk = raw_bytes[i:i+record_size]
+        try:
+            val = struct.unpack('<f', chunk)[0]
+            # Filtramos valores absurdos/infinitos propios del relleno de cabecera
+            if -100000.0 < val < 100000.0 and val != 0.0:
+                values.append(val)
+        except Exception:
+            pass
+
+    if values:
+        st.success(f"¡Éxito! Se desempaquetaron {len(values)} valores numéricos reales del archivo binario.")
         
-        # Filtrar líneas válidas que contengan datos numéricos o marcas de tiempo
-        clean_lines = [line.strip() for line in lines if len(line.strip()) > 0 and not line.startswith('\x00')]
+        # Crear DataFrame con los valores extraídos
+        df = pd.DataFrame({'Índice_Muestra': range(1, len(values) + 1), 'Valor_Sensado': values})
         
-        if len(clean_lines) > 0:
-            st.subheader("📋 Vista previa de datos extraídos")
+        col1, col2 = st.columns([1, 2])
+        
+        with col1:
+            st.subheader("📋 Tabla de Valores Extraídos")
+            st.dataframe(df.head(200), use_container_width=True)
             
-            # Intento de parseo automático como CSV/TSV
-            try:
-                df = pd.read_csv(io.StringIO("\n".join(clean_lines)), sep=r'[\t;,|]', engine='python')
-                st.dataframe(df.head(100), use_container_width=True)
-                
-                # Botón para descargar en formato .txt / .csv limpio
-                csv_bytes = df.to_csv(index=False).encode('utf-8')
-                st.download_button(
-                    label="📥 Descargar datos limpios (.txt / .csv)",
-                    data=csv_bytes,
-                    file_name="curvas_scada_limpias.txt",
-                    mime="text/plain"
-                )
-                
-                # Gráfico si hay columnas numéricas
-                numeric_cols = df.select_dtypes(include=['float64', 'int64']).columns
-                if len(numeric_cols) > 0:
-                    st.subheader("📈 Gráfico de Curvas")
-                    col_selected = st.selectbox("Selecciona la variable a graficar:", numeric_cols)
-                    st.line_chart(df[col_selected])
-                    
-            except Exception as e:
-                st.warning("No se pudo estructurar automáticamente en tabla. Mostrando texto extraído:")
-                st.text_area("Contenido extraído", "\n".join(clean_lines[:200]), height=300)
-        else:
-            st.error("El archivo no contiene texto legible directamente. Es un binario cerrado del SCADA.")
-            
-    except Exception as ex:
-        st.error(f"Error al procesar el archivo: {ex}")
+            # Exportar a .txt / .csv
+            txt_data = df.to_csv(index=False, sep='\t').encode('utf-8')
+            st.download_button(
+                label="📥 Descargar como archivo .txt",
+                data=txt_data,
+                file_name="datos_scada_desempaquetados.txt",
+                mime="text/plain"
+            )
+
+        with col2:
+            st.subheader("📈 Gráfico de la Curva")
+            st.line_chart(df['Valor_Sensado'])
+    else:
+        st.error("No se pudieron extraer valores numéricos válidos. La estructura de bytes requiere una máscara específica.")
