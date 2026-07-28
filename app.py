@@ -1,61 +1,37 @@
 import streamlit as st
 import pandas as pd
-import struct
+import re
 
-st.set_page_config(page_title="Extractor Binario SCADA", layout="wide")
+st.set_page_config(page_title="Identificador de Archivos SCADA", layout="wide")
 
-st.title("⚡ Extractor de Archivos Binarios SCADA (.dat)")
-st.write("Esta aplicación desempaqueta los bytes numéricos (`float32`) de archivos `.dat` cerrados o binarios.")
+st.title("🔍 Identificador de Contenido de Archivos .dat")
+st.write("Carga tus archivos `.dat` para leer sus **cabeceras e identificadores** y saber a qué variable corresponden.")
 
-uploaded_file = st.file_uploader("Sube tu archivo .dat binario", type=["dat", "raw", "his"])
+uploaded_files = st.file_uploader("Sube uno o varios archivos .dat", type=["dat", "raw", "his"], accept_multiple_files=True)
 
-if uploaded_file is not None:
-    # Leer el archivo como bytes puros (sin intentar convertir a texto)
-    raw_bytes = uploaded_file.read()
-    total_bytes = len(raw_bytes)
-    st.info(f"Tamaño del archivo: {total_bytes / (1024*1024):.2f} MB ({total_bytes} bytes)")
-    
-    # Cada número flotante (float) en arquitectura de 32 bits ocupa 4 bytes
-    record_size = 4 
-    num_records = total_bytes // record_size
-    
-    values = []
-    
-    # Recorremos el archivo byte por byte extractando valores flotantes (IEEE 754)
-    # '<f' indica un número flotante de 32 bits (Little-Endian standard en Windows)
-    for i in range(0, total_bytes - (total_bytes % record_size), record_size):
-        chunk = raw_bytes[i:i+record_size]
-        try:
-            val = struct.unpack('<f', chunk)[0]
-            # Filtramos valores absurdos/infinitos propios del relleno de cabecera
-            if -100000.0 < val < 100000.0 and val != 0.0:
-                values.append(val)
-        except Exception:
-            pass
+if uploaded_files:
+    summary_data = []
 
-    if values:
-        st.success(f"¡Éxito! Se desempaquetaron {len(values)} valores numéricos reales del archivo binario.")
+    for uploaded_file in uploaded_files:
+        raw_bytes = uploaded_file.read()
         
-        # Crear DataFrame con los valores extraídos
-        df = pd.DataFrame({'Índice_Muestra': range(1, len(values) + 1), 'Valor_Sensado': values})
+        # 1. Extraer secuencias de texto ASCII (nombres de variables, Tags, subestaciones)
+        # Esto busca palabras legibles ocultas en la cabecera binaria del archivo
+        ascii_strings = re.findall(b'[a-zA-Z0-9_\\-\\.:]{4,}', raw_bytes[:1024])
+        readable_tags = [s.decode('ascii', errors='ignore') for s in ascii_strings]
         
-        col1, col2 = st.columns([1, 2])
+        # 2. Identificar posibles textos clave
+        header_text = " | ".join(readable_tags[:10]) if readable_tags else "Sin texto identificable en cabecera"
         
-        with col1:
-            st.subheader("📋 Tabla de Valores Extraídos")
-            st.dataframe(df.head(200), use_container_width=True)
-            
-            # Exportar a .txt / .csv
-            txt_data = df.to_csv(index=False, sep='\t').encode('utf-8')
-            st.download_button(
-                label="📥 Descargar como archivo .txt",
-                data=txt_data,
-                file_name="datos_scada_desempaquetados.txt",
-                mime="text/plain"
-            )
+        summary_data.append({
+            "Nombre del Archivo": uploaded_file.name,
+            "Tamaño (MB)": round(len(raw_bytes) / (1024 * 1024), 2),
+            "Identificadores / Tags Encontrados": header_text
+        })
 
-        with col2:
-            st.subheader("📈 Gráfico de la Curva")
-            st.line_chart(df['Valor_Sensado'])
-    else:
-        st.error("No se pudieron extraer valores numéricos válidos. La estructura de bytes requiere una máscara específica.")
+    # Mostrar la tabla comparativa de todos los .dat subidos
+    st.subheader("📋 Resumen de Identificación de Archivos")
+    df_summary = pd.DataFrame(summary_data)
+    st.dataframe(df_summary, use_container_width=True)
+    
+    st.info("💡 **Consejo:** Compara los 'Tags Encontrados' con las etiquetas que ves en las pantallas del unifilar VICOS para saber cuál archivo procesar.")
